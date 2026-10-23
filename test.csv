@@ -1,0 +1,5 @@
+
+code,label,language
+"def add(a, b): return a + b",0,Python
+"def multiply(x, y): return x * y",1,Python
+"public int subtract(int a, int b) { return a - b; }",0,Java
