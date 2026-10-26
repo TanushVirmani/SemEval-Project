@@ -6,12 +6,23 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", "4")
 os.environ.setdefault("HF_HOME", str(BASE_DIR / ".cache/huggingface"))
 os.environ.setdefault("MPLCONFIGDIR", str(BASE_DIR / ".cache/matplotlib"))
 LABELS = {0: "Human-written", 1: "Machine-generated"}
-DEFAULT_CHECKPOINT = Path(
-    os.environ.get("MODEL_CHECKPOINT", str(BASE_DIR / "checkpoints"))
-)
+
+
+def default_checkpoint():
+    explicit = os.environ.get("MODEL_CHECKPOINT")
+    if explicit:
+        return Path(explicit)
+    active = BASE_DIR / "active_model.json"
+    if active.exists():
+        return BASE_DIR / json.loads(active.read_text())["checkpoint"]
+    return BASE_DIR / "checkpoints"
+
+
+DEFAULT_CHECKPOINT = default_checkpoint()
 
 
 def add_language_prefix(language, code):
@@ -58,11 +69,20 @@ def validate_checkpoint(path):
     metadata = json.loads((path / "training_metadata.json").read_text())
     required = {
         "max_length",
-        "steps_completed",
         "training_code_hashes",
         "validation_code_hashes",
         "smoke_run",
     }
+    if metadata.get("training_origin") != "third_party":
+        required.add("steps_completed")
+    elif not (
+        metadata.get("training_overlap_unknown")
+        and metadata.get("source_model_card")
+        and metadata.get("source_revision")
+    ):
+        raise ValueError(
+            "External checkpoint must document its source and unknown training overlap."
+        )
     if required - metadata.keys():
         raise ValueError(
             "Training metadata is incomplete; regenerate the checkpoint with train_model.py."
@@ -72,7 +92,10 @@ def validate_checkpoint(path):
         or not 8 <= metadata["max_length"] <= 512
     ):
         raise ValueError("Invalid tokenizer maximum length in training metadata.")
-    if metadata["steps_completed"] < 1:
+    if (
+        metadata.get("training_origin") != "third_party"
+        and metadata["steps_completed"] < 1
+    ):
         raise ValueError("Checkpoint has no completed training steps.")
     return path
 
@@ -115,3 +138,25 @@ def read_labeled_csv(path):
         )
     df["label"] = labels.astype(int)
     return df
+
+
+def encode_texts(tokenizer, texts, max_length, strategy="head"):
+    """Use identical first-only or first+last tokenization for fitting and inference."""
+    if strategy == "head":
+        return tokenizer(list(texts), truncation=True, max_length=max_length)
+    available = max_length - tokenizer.num_special_tokens_to_add(pair=False)
+    if available < 2:
+        raise ValueError("Token limit is too small")
+    result = {"input_ids": [], "attention_mask": []}
+    for ids in tokenizer(list(texts), add_special_tokens=False, truncation=False)[
+        "input_ids"
+    ]:
+        if len(ids) > available:
+            first = (available + 1) // 2
+            ids = ids[:first] + ids[-(available - first) :]
+        prepared = tokenizer.prepare_for_model(
+            ids, return_attention_mask=True, return_token_type_ids=False
+        )
+        result["input_ids"].append(prepared["input_ids"])
+        result["attention_mask"].append(prepared["attention_mask"])
+    return result

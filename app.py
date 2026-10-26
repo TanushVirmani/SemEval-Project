@@ -8,7 +8,6 @@ Place fine-tuned weights in ./checkpoints/ or set MODEL_CHECKPOINT env var.
 
 from __future__ import annotations
 
-import json
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -23,9 +22,6 @@ import matplotlib
 from model_utils import (
     DEFAULT_CHECKPOINT,
     LABELS,
-    add_language_prefix,
-    load_classifier,
-    validate_checkpoint,
 )
 
 matplotlib.use("Agg")
@@ -33,16 +29,25 @@ matplotlib.use("Agg")
 import gradio as gr
 import lizard
 import matplotlib.pyplot as plt
-import torch
+
+from detector import Detector, validate_detector
 
 MODEL_CHECKPOINT = str(DEFAULT_CHECKPOINT)
 
 LANGUAGE_OPTIONS = ["Python", "C++", "Java"]
+if (DEFAULT_CHECKPOINT / "model.joblib").is_file():
+    LANGUAGE_OPTIONS += ["JavaScript", "C#", "C", "Go", "PHP", "Ruby", "HTML"]
 
 LIZARD_FILENAMES = {
     "Python": "snippet.py",
     "C++": "snippet.cpp",
     "Java": "snippet.java",
+    "JavaScript": "snippet.js",
+    "C#": "snippet.cs",
+    "C": "snippet.c",
+    "Go": "snippet.go",
+    "PHP": "snippet.php",
+    "Ruby": "snippet.rb",
 }
 
 COMPLEXITY_THRESHOLDS = {
@@ -81,14 +86,9 @@ EXAMPLE_MACHINE_PYTHON = [
 ]
 
 
-def _language_prefix(language: str, code: str) -> str:
-    """Optional language hint prepended for models trained with metadata."""
-    return add_language_prefix(language, code)
-
-
 @lru_cache(maxsize=1)
-def load_model_and_tokenizer():
-    return load_classifier(MODEL_CHECKPOINT)
+def load_detector():
+    return Detector(MODEL_CHECKPOINT)
 
 
 def predict(language: str, code: str) -> tuple[str, str, str, str]:
@@ -107,28 +107,16 @@ def predict(language: str, code: str) -> tuple[str, str, str, str]:
         )
 
     try:
-        model, tokenizer, device = load_model_and_tokenizer()
+        detector = load_detector()
+        probabilities = detector.probabilities([code], [language])[0].tolist()
     except (ValueError, OSError) as exc:
         return "—", "—", "—", f"**Detector unavailable:** {exc}"
-    text = _language_prefix(language, code)
-
-    max_length = int(
-        json.loads((Path(MODEL_CHECKPOINT) / "training_metadata.json").read_text())[
-            "max_length"
-        ]
-    )
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        max_length=max_length,
-        padding=True,
-    )
-    inputs = {key: value.to(device) for key, value in inputs.items()}
-
-    with torch.no_grad():
-        logits = model(**inputs).logits
-        probabilities = torch.softmax(logits, dim=-1)[0].cpu().tolist()
+    if detector.backend == "efficient":
+        input_note = "Full snippet; lexical and structural features. Validation-selected decision boundary."
+    else:
+        input_note = (
+            f"{detector.metadata['max_length']} tokens; longer snippets are truncated."
+        )
 
     human_conf = probabilities[0]
     machine_conf = probabilities[1]
@@ -140,7 +128,7 @@ def predict(language: str, code: str) -> tuple[str, str, str, str]:
         f"**Language:** {language}  \n"
         f"**Prediction:** {prediction}  \n"
         f"**Top confidence:** {confidence:.1%}  \n"
-        f"**Input limit:** {max_length} tokens; longer snippets are truncated.  \n\n"
+        f"**Input handling:** {input_note}  \n\n"
         "_SemEval-2026 Task 13 Subtask A — binary human vs machine code detection._"
     )
 
@@ -173,7 +161,9 @@ def analyze_complexity(language: str, code: str) -> tuple[str, plt.Figure | None
     if not code or not code.strip():
         return "Paste code to see complexity metrics.", None
 
-    filename = LIZARD_FILENAMES.get(language, "snippet.py")
+    if language not in LIZARD_FILENAMES:
+        return f"Complexity analysis is unavailable for {language}.", None
+    filename = LIZARD_FILENAMES[language]
     try:
         analysis = lizard.analyze_file.analyze_source_code(filename, code)
     except Exception as exc:
@@ -251,7 +241,7 @@ def analyze_complexity(language: str, code: str) -> tuple[str, plt.Figure | None
 
 def build_interface() -> gr.Blocks:
     try:
-        validate_checkpoint(MODEL_CHECKPOINT)
+        validate_detector(MODEL_CHECKPOINT)
         checkpoint_status = f"Trained checkpoint available at `{MODEL_CHECKPOINT}`"
     except ValueError:
         checkpoint_status = "Detector unavailable: run train_model.py first. Complexity analysis remains available."
@@ -264,10 +254,9 @@ def build_interface() -> gr.Blocks:
             # SemEval-2026 Task 13: Machine-Generated Code Detector
 
             Detect whether a code snippet is **human-written** or **machine-generated**
-            using [microsoft/codebert-base](https://huggingface.co/microsoft/codebert-base),
-            and analyze its **cyclomatic complexity** with an interactive chart.
+            using a trained classifier, and analyze its **cyclomatic complexity** with an interactive chart.
 
-            Supports **Python**, **C++**, and **Java**. This is an experimental detector; confidence scores are uncalibrated estimates, not proof of authorship.
+            Choose the code language below. This is an experimental detector; confidence scores are uncalibrated estimates, not proof of authorship.
             """
         )
         gr.Markdown(f"**Model status:** {checkpoint_status}")

@@ -27,6 +27,15 @@ def main():
     parser.add_argument(
         "--resume-from-checkpoint", type=Path, help="Resume a saved Trainer checkpoint"
     )
+    parser.add_argument("--initial-checkpoint", type=Path)
+    parser.add_argument(
+        "--freeze-layers",
+        type=int,
+        default=0,
+        help="Freeze embeddings and the first N encoder layers",
+    )
+    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--tokenization", choices=["head", "head_tail"], default="head")
     args = parser.parse_args()
     if args.epochs <= 0 or args.batch_size <= 0 or not 8 <= args.max_length <= 512:
         parser.error(
@@ -63,10 +72,10 @@ def main():
     )
 
     set_seed(42)
-    initialization_source = (
-        str(args.resume_from_checkpoint)
-        if args.resume_from_checkpoint
-        else "microsoft/codebert-base"
+    initialization_source = str(
+        args.resume_from_checkpoint
+        or args.initial_checkpoint
+        or "microsoft/codebert-base"
     )
     tokenizer = AutoTokenizer.from_pretrained(initialization_source)
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -75,6 +84,16 @@ def main():
         id2label=LABELS,
         label2id={v: k for k, v in LABELS.items()},
     )
+
+    if args.freeze_layers:
+        if not 0 <= args.freeze_layers <= len(model.roberta.encoder.layer):
+            parser.error("Freeze layer count is out of range")
+        for parameter in model.roberta.embeddings.parameters():
+            parameter.requires_grad = False
+        for layer in model.roberta.encoder.layer[: args.freeze_layers]:
+            for parameter in layer.parameters():
+                parameter.requires_grad = False
+    from model_utils import encode_texts
 
     def dataset(df):
         ds = Dataset.from_dict(
@@ -86,8 +105,8 @@ def main():
             }
         )
         return ds.map(
-            lambda batch: tokenizer(
-                batch["text"], truncation=True, max_length=args.max_length
+            lambda batch: encode_texts(
+                tokenizer, batch["text"], args.max_length, args.tokenization
             ),
             batched=True,
             remove_columns=["text"],
@@ -99,7 +118,7 @@ def main():
         max_steps=args.max_steps,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
-        learning_rate=2e-5,
+        learning_rate=args.learning_rate,
         weight_decay=0.01,
         eval_strategy="epoch",
         save_strategy="epoch",
@@ -136,6 +155,12 @@ def main():
     tokenizer.save_pretrained(args.output_dir)
     metadata = {
         "base_model": "microsoft/codebert-base",
+        "initial_checkpoint": str(args.initial_checkpoint)
+        if args.initial_checkpoint
+        else None,
+        "freeze_layers": args.freeze_layers,
+        "learning_rate": args.learning_rate,
+        "tokenization": args.tokenization,
         "seed": 42,
         "train_rows": len(train_df),
         "validation_rows": len(val_df),
@@ -157,6 +182,22 @@ def main():
             hashlib.sha256(c.strip().encode()).hexdigest() for c in val_df.code
         ],
     }
+    if (
+        args.initial_checkpoint
+        and (args.initial_checkpoint / "training_metadata.json").exists()
+    ):
+        prior = json.loads(
+            (args.initial_checkpoint / "training_metadata.json").read_text()
+        )
+        metadata["prior_supervised_training_rows"] = prior.get("train_rows", 0)
+        metadata["training_code_hashes"] = sorted(
+            set(metadata["training_code_hashes"])
+            | set(prior.get("training_code_hashes", []))
+        )
+        metadata["validation_code_hashes"] = sorted(
+            set(metadata["validation_code_hashes"])
+            | set(prior.get("validation_code_hashes", []))
+        )
     (args.output_dir / "training_metadata.json").write_text(
         json.dumps(metadata, indent=2)
     )
