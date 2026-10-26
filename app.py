@@ -8,10 +8,25 @@ Place fine-tuned weights in ./checkpoints/ or set MODEL_CHECKPOINT env var.
 
 from __future__ import annotations
 
+import json
 import os
 from functools import lru_cache
+from pathlib import Path
+
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+os.environ.setdefault(
+    "MPLCONFIGDIR", str(Path(__file__).resolve().parent / ".cache/matplotlib")
+)
 
 import matplotlib
+
+from model_utils import (
+    DEFAULT_CHECKPOINT,
+    LABELS,
+    add_language_prefix,
+    load_classifier,
+    validate_checkpoint,
+)
 
 matplotlib.use("Agg")
 
@@ -19,16 +34,8 @@ import gradio as gr
 import lizard
 import matplotlib.pyplot as plt
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-MODEL_NAME = os.environ.get("MODEL_NAME", "microsoft/codebert-base")
-MODEL_CHECKPOINT = os.environ.get("MODEL_CHECKPOINT", "./checkpoints")
-MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "512"))
-
-LABELS = {
-    0: "Human-written",
-    1: "Machine-generated",
-}
+MODEL_CHECKPOINT = str(DEFAULT_CHECKPOINT)
 
 LANGUAGE_OPTIONS = ["Python", "C++", "Java"]
 
@@ -46,13 +53,13 @@ COMPLEXITY_THRESHOLDS = {
 # Sample inputs for gr.Examples: [language, code]
 EXAMPLE_HUMAN_PYTHON = [
     "Python",
-    '''def two_sum(nums, target):
+    """def two_sum(nums, target):
     seen = {}
     for i, n in enumerate(nums):
         if target - n in seen:
             return [seen[target - n], i]
         seen[n] = i
-    return []''',
+    return []""",
 ]
 
 EXAMPLE_MACHINE_PYTHON = [
@@ -76,30 +83,12 @@ EXAMPLE_MACHINE_PYTHON = [
 
 def _language_prefix(language: str, code: str) -> str:
     """Optional language hint prepended for models trained with metadata."""
-    prefixes = {
-        "Python": "# language: python\n",
-        "C++": "// language: cpp\n",
-        "Java": "// language: java\n",
-    }
-    return prefixes.get(language, "") + code.strip()
+    return add_language_prefix(language, code)
 
 
 @lru_cache(maxsize=1)
 def load_model_and_tokenizer():
-    checkpoint_path = MODEL_CHECKPOINT
-    load_path = checkpoint_path if os.path.isdir(checkpoint_path) else MODEL_NAME
-
-    tokenizer = AutoTokenizer.from_pretrained(load_path)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        load_path,
-        num_labels=2,
-        id2label=LABELS,
-        label2id={v: k for k, v in LABELS.items()},
-    )
-    model.eval()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    return model, tokenizer, device
+    return load_classifier(MODEL_CHECKPOINT)
 
 
 def predict(language: str, code: str) -> tuple[str, str, str, str]:
@@ -117,14 +106,22 @@ def predict(language: str, code: str) -> tuple[str, str, str, str]:
             "**Error:** Please paste a code snippet to analyze.",
         )
 
-    model, tokenizer, device = load_model_and_tokenizer()
+    try:
+        model, tokenizer, device = load_model_and_tokenizer()
+    except (ValueError, OSError) as exc:
+        return "—", "—", "—", f"**Detector unavailable:** {exc}"
     text = _language_prefix(language, code)
 
+    max_length = int(
+        json.loads((Path(MODEL_CHECKPOINT) / "training_metadata.json").read_text())[
+            "max_length"
+        ]
+    )
     inputs = tokenizer(
         text,
         return_tensors="pt",
         truncation=True,
-        max_length=MAX_LENGTH,
+        max_length=max_length,
         padding=True,
     )
     inputs = {key: value.to(device) for key, value in inputs.items()}
@@ -142,7 +139,8 @@ def predict(language: str, code: str) -> tuple[str, str, str, str]:
     details = (
         f"**Language:** {language}  \n"
         f"**Prediction:** {prediction}  \n"
-        f"**Top confidence:** {confidence:.1%}  \n\n"
+        f"**Top confidence:** {confidence:.1%}  \n"
+        f"**Input limit:** {max_length} tokens; longer snippets are truncated.  \n\n"
         "_SemEval-2026 Task 13 Subtask A — binary human vs machine code detection._"
     )
 
@@ -252,13 +250,15 @@ def analyze_complexity(language: str, code: str) -> tuple[str, plt.Figure | None
 
 
 def build_interface() -> gr.Blocks:
-    checkpoint_status = (
-        f"Loaded from `{MODEL_CHECKPOINT}`"
-        if os.path.isdir(MODEL_CHECKPOINT)
-        else f"Using base weights from `{MODEL_NAME}` (fine-tune for best accuracy)"
-    )
+    try:
+        validate_checkpoint(MODEL_CHECKPOINT)
+        checkpoint_status = f"Trained checkpoint available at `{MODEL_CHECKPOINT}`"
+    except ValueError:
+        checkpoint_status = "Detector unavailable: run train_model.py first. Complexity analysis remains available."
 
-    with gr.Blocks(title="SemEval-2026 Task 13 — Code Authorship Detector") as demo:
+    with gr.Blocks(
+        title="SemEval-2026 Task 13 — Code Authorship Detector", theme=gr.themes.Soft()
+    ) as demo:
         gr.Markdown(
             """
             # SemEval-2026 Task 13: Machine-Generated Code Detector
@@ -267,7 +267,7 @@ def build_interface() -> gr.Blocks:
             using [microsoft/codebert-base](https://huggingface.co/microsoft/codebert-base),
             and analyze its **cyclomatic complexity** with an interactive chart.
 
-            Supports training languages from Subtask A: **Python**, **C++**, and **Java**.
+            Supports **Python**, **C++**, and **Java**. This is an experimental detector; confidence scores are uncalibrated estimates, not proof of authorship.
             """
         )
         gr.Markdown(f"**Model status:** {checkpoint_status}")
@@ -291,13 +291,13 @@ def build_interface() -> gr.Blocks:
                 gr.Examples(
                     examples=[EXAMPLE_HUMAN_PYTHON, EXAMPLE_MACHINE_PYTHON],
                     inputs=[language, code_input],
-                    label="Sample examples",
+                    label="Illustrative snippets (not labeled test data)",
                 )
 
             with gr.Column(scale=1):
                 prediction = gr.Label(
                     label="Prediction",
-                    value={"Human-written": 0.5, "Machine-generated": 0.5},
+                    value={},
                 )
                 with gr.Row():
                     human_confidence = gr.Textbox(
@@ -322,8 +322,10 @@ def build_interface() -> gr.Blocks:
             complexity_md, complexity_fig = analyze_complexity(lang, code)
 
             if pred == "—":
+                if complexity_fig is not None:
+                    plt.close(complexity_fig)
                 return (
-                    gr.update(value={"Human-written": 0.0, "Machine-generated": 0.0}),
+                    gr.update(value={}),
                     human_conf,
                     machine_conf,
                     detail_md,
@@ -331,11 +333,20 @@ def build_interface() -> gr.Blocks:
                     complexity_fig,
                 )
 
+            if complexity_fig is not None:
+                plt.close(complexity_fig)
             scores = {
                 "Human-written": float(human_conf.strip("%")) / 100,
                 "Machine-generated": float(machine_conf.strip("%")) / 100,
             }
-            return scores, human_conf, machine_conf, detail_md, complexity_md, complexity_fig
+            return (
+                scores,
+                human_conf,
+                machine_conf,
+                detail_md,
+                complexity_md,
+                complexity_fig,
+            )
 
         outputs = [
             prediction,
@@ -372,7 +383,6 @@ if __name__ == "__main__":
     app = build_interface()
     app.launch(
         server_name="127.0.0.1",
-        server_port=7860,
-        theme=gr.themes.Soft(),
+        server_port=int(os.environ.get("GRADIO_SERVER_PORT", "7860")),
         ssr_mode=False,
     )

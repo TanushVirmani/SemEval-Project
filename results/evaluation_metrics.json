@@ -1,0 +1,65 @@
+{
+  "test_samples": 1000,
+  "accuracy": 0.431,
+  "majority_class_accuracy": 0.777,
+  "macro_precision": 0.5831081081081081,
+  "macro_recall": 0.59228318645359,
+  "macro_f1": 0.4302199711404914,
+  "classification_report": {
+    "Human-written": {
+      "precision": 0.9,
+      "recall": 0.30115830115830117,
+      "f1-score": 0.4513018322082932,
+      "support": 777.0
+    },
+    "Machine-generated": {
+      "precision": 0.2662162162162162,
+      "recall": 0.8834080717488789,
+      "f1-score": 0.4091381100726895,
+      "support": 223.0
+    },
+    "accuracy": 0.431,
+    "macro avg": {
+      "precision": 0.5831081081081081,
+      "recall": 0.59228318645359,
+      "f1-score": 0.4302199711404914,
+      "support": 1000.0
+    },
+    "weighted avg": {
+      "precision": 0.7586662162162163,
+      "recall": 0.431,
+      "f1-score": 0.4418993221720536,
+      "support": 1000.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      234,
+      543
+    ],
+    [
+      26,
+      197
+    ]
+  ],
+  "checkpoint": "/Users/fxtanush/Desktop/ADA Project/SemEval-Project/checkpoints",
+  "test_csv": "/Users/fxtanush/Desktop/ADA Project/SemEval-Project/data/test.csv",
+  "test_sha256": "314dd2c4fb472b458e48951d95241f9bb500554ab92556b0edbcb9eadb7da46e",
+  "training": {
+    "base_model": "microsoft/codebert-base",
+    "seed": 42,
+    "train_rows": 2000,
+    "validation_rows": 500,
+    "epochs_requested": 2,
+    "steps_completed": 500,
+    "max_length": 256,
+    "smoke_run": false,
+    "train_csv_sha256": "0736f02f15c569815596e389a8d3d6f8138e96a4d77df0b6a42e8d42d212f70e",
+    "validation_csv_sha256": "3f2d98cf7909af0580b090f80b91157acbec2840c9cb80519824af09afacdfb3",
+    "best_checkpoint": "/Users/fxtanush/Desktop/ADA Project/SemEval-Project/checkpoints/runs/checkpoint-500",
+    "best_validation_macro_f1": 0.9579392642976459,
+    "device": "cpu",
+    "dataset_revision": "df2aec18238a47fabfb22c79570db15fd1588aa3",
+    "base_model_revision": "3b0952feddeffad0063f274080e3c23d75e7eb39"
+  }
+}

@@ -1,0 +1,17 @@
+Test samples: 1000
+Accuracy: 0.4310
+Macro Precision: 0.5831
+Macro Recall: 0.5923
+Macro F1-score: 0.4302
+Smoke training run: False
+
+Majority-class accuracy baseline: 0.7770
+
+                   precision    recall  f1-score   support
+
+    Human-written     0.9000    0.3012    0.4513       777
+Machine-generated     0.2662    0.8834    0.4091       223
+
+         accuracy                         0.4310      1000
+        macro avg     0.5831    0.5923    0.4302      1000
+     weighted avg     0.7587    0.4310    0.4419      1000

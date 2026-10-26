@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.cache/
+checkpoints*/
+data/
+results/
+.gradio/
+*.log
+tmp/
